@@ -1,0 +1,19 @@
+{
+  "name": "my-red-pages",
+  "version": "1.0.0",
+  "description": "Índice cross-negocio y buscador client-side de My-RED",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "node scripts/build-index.mjs && node scripts/build-seo.mjs",
+    "build:index": "node scripts/build-index.mjs",
+    "build:seo": "node scripts/build-seo.mjs"
+  },
+  "dependencies": {
+    "googleapis": "^128.0.0",
+    "ngeohash": "^0.6.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
