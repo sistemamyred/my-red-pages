@@ -1,0 +1,58 @@
+# INICIO DEL ARCHIVO
+name: Update Index
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: update-index
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install deps
+        run: npm install
+
+      - name: Build index
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          SHEETS_CAMBIOS: ${{ secrets.SHEETS_CAMBIOS }}
+          SHEETS_NEGOCIOS: ${{ secrets.SHEETS_NEGOCIOS }}
+          SHEETS_UBICACIONES: ${{ secrets.SHEETS_UBICACIONES }}
+        run: node scripts/build-index.mjs
+
+      - name: Build SEO
+        env:
+          BASE_URL: ${{ vars.BASE_URL }}
+        run: node scripts/build-seo.mjs
+
+      - name: Verify index
+        run: |
+          if [ ! -f public/indice.json ]; then
+            echo "ERROR: public/indice.json no existe"
+            exit 1
+          fi
+          node -e "JSON.parse(require('fs').readFileSync('public/indice.json','utf8'))" || exit 1
+          echo "Índice válido."
+
+      - name: Commit and push
+        run: |
+          git config user.name "my-red-bot"
+          git config user.email "bot@my-red.net"
+          git add public/
+          git diff --staged --quiet || git commit -m "Update index [automated]"
+          git push
+# FIN DEL ARCHIVO
