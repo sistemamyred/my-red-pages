@@ -1,0 +1,7 @@
+# INICIO DEL ARCHIVO
+node_modules/
+.env
+.affected.json
+.DS_Store
+*.log
+# FIN DEL ARCHIVO
