@@ -27,7 +27,7 @@ try {
 
 if (!indice.productos || indice.productos.length === 0) {
   console.log('Índice vacío. Generando sitemap mínimo.');
-  mkdirSync('public', { recursive: true });
+  mkdirSync('docs', { recursive: true });
   writeFileSync(OUT_SITEMAP, '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n</urlset>\n');
   process.exit(0);
 }
