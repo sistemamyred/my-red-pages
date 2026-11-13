@@ -73,10 +73,10 @@ function generarZonaHTML(geohash5, data) {
       .join('');
     return `
       <article class="negocio" data-negocio-id="${esc(nid)}" data-lat="${n.lat}" data-lon="${n.lon}">
-        <h3><a href="/cl/${esc(n.slug)}/">${esc(n.nombre)}</a></h3>
+        <h3><a href=“https://sitios.my-red.net/cl/${esc(n.slug)}/”>${esc(n.nombre)}</a></h3>
         <p class="distancia" data-lat="${n.lat}" data-lon="${n.lon}">—</p>
         <ul class="productos">${prods}</ul>
-        <a href="/cl/${esc(n.slug)}/" class="btn-ver">Ver negocio →</a>
+        <a href=“https://sitios.my-red.net/cl/${esc(n.slug)}/” class=“btn-ver”>Ver negocio →</a>
       </article>`;
   }).join('');
 
@@ -86,7 +86,7 @@ function generarZonaHTML(geohash5, data) {
     "item": {
       "@type": "LocalBusiness",
       "name": n.nombre,
-      "url": `${BASE_URL}/cl/${n.slug}/`,
+      "url": `https://sitios.my-red.net/cl/${n.slug}/`,
       "geo": { "@type": "GeoCoordinates", "latitude": n.lat, "longitude": n.lon }
     }
   }));
@@ -133,7 +133,7 @@ footer{text-align:center;padding:24px;color:#666;font-size:.85rem}
 <body>
 <header>
   <h1>Productos disponibles en zona ${esc(geohash5)}</h1>
-  <p>${negocios.length} negocios · ${totalProductos} productos</p>
+  <p>${negocios.length} negocios • ${totalProductos} productos</p>
 </header>
 <main>
   <section>
