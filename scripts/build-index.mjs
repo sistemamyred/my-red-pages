@@ -138,7 +138,7 @@ async function main() {
   indice.version = '1.0';
   indice.actualizado = new Date().toISOString();
   indice.total = indice.productos.length;
-  mkdirSync('public', { recursive: true });
+  mkdirSync('docs', { recursive: true });
   writeFileSync('docs/indice.json', JSON.stringify(indice));
 
   // 7) Lista de afectados (para build-seo)
