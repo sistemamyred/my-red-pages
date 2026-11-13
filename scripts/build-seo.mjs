@@ -1,15 +1,15 @@
 // INICIO DEL ARCHIVO
-// build-seo.mjs — Lee public/indice.json y genera:
-//   - public/zona/{geohash5}.html (listado + mapa)
-//   - public/sitemap.xml
+// build-seo.mjs — Lee docs/indice.json y genera:
+//   - docs/zona/{geohash5}.html (listado + mapa)
+//   - docs/sitemap.xml
 // No modifica indice.json. No accede a Sheets de negocios.
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 
-const INDICE_PATH = 'public/indice.json';
-const OUT_ZONA = 'public/zona';
-const OUT_SITEMAP = 'public/sitemap.xml';
+const INDICE_PATH = 'docs/indice.json';
+const OUT_ZONA = 'docs/zona';
+const OUT_SITEMAP = 'docs/sitemap.xml';
 const BASE_URL = process.env.BASE_URL || 'https://my-red.net';
 
 if (!existsSync(INDICE_PATH)) {
