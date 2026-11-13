@@ -1,6 +1,6 @@
 // INICIO DEL ARCHIVO
 // build-index.mjs — Lee el buzón de cambios (Apps Script → Sheet Cambios),
-// aplica los cambios a public/indice.json, genera backup y marca procesado=1.
+// aplica los cambios a docs/indice.json, genera backup y marca procesado=1.
 // No lee Sheets ni Drive de negocios. Cumple D3.
 
 import { google } from 'googleapis';
@@ -51,14 +51,14 @@ async function main() {
 
   // 2) Cargar índice actual con backup
   let indice = { version: '1.0', actualizado: '', total: 0, productos: [], negocios: {} };
-  if (existsSync('public/indice.json')) {
+  if (existsSync('docs/indice.json')) {
     try {
-      copyFileSync('public/indice.json', 'public/indice.backup.json');
+      copyFileSync('docs/indice.json', 'docs/indice.backup.json');
     } catch (e) {
       console.warn('No se pudo generar backup:', e.message);
     }
     try {
-      indice = JSON.parse(readFileSync('public/indice.json', 'utf8'));
+      indice = JSON.parse(readFileSync('docs/indice.json', 'utf8'));
       if (!indice.productos) indice.productos = [];
       if (!indice.negocios) indice.negocios = {};
       if (!indice.version) indice.version = '1.0';
@@ -139,7 +139,7 @@ async function main() {
   indice.actualizado = new Date().toISOString();
   indice.total = indice.productos.length;
   mkdirSync('public', { recursive: true });
-  writeFileSync('public/indice.json', JSON.stringify(indice));
+  writeFileSync('docs/indice.json', JSON.stringify(indice));
 
   // 7) Lista de afectados (para build-seo)
   writeFileSync('.affected.json', JSON.stringify(Array.from(afectados)));
