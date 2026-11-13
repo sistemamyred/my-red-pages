@@ -188,10 +188,10 @@ async function buscar() {
       ? (g.distancia < 1000 ? 'a ' + g.distancia + ' m' : 'a ' + (g.distancia/1000).toFixed(1) + ' km')
       : '';
     return '<article class="negocio">' +
-      '<h3><a href="/cl/' + g.negocio.slug + '/">' + g.negocio.nombre + '</a></h3>' +
+      '<h3><a href="https://sitios.my-red.net/cl/’ + g.negocio.slug + '/">' + g.negocio.nombre + '</a></h3>' +
       (dist ? '<p class="distancia">' + dist + '</p>' : '') +
       '<ul class="productos">' + prods + '</ul>' +
-      '<a href="/cl/' + g.negocio.slug + '/" class="btn-ver">Ver negocio →</a>' +
+      '<a href="https://sitios.my-red.net/cl/’ + g.negocio.slug + '/" class="btn-ver">Ver negocio →</a>' +
       '</article>';
   }).join('');
 
@@ -199,7 +199,7 @@ async function buscar() {
   for (const g of listaGrupos) {
     const marker = new maplibregl.Marker({ color: '#2E7D32' })
       .setLngLat([g.negocio.lon, g.negocio.lat])
-      .setPopup(new maplibregl.Popup().setHTML('<strong>' + g.negocio.nombre + '</strong><br><a href="/cl/' + g.negocio.slug + '/">Ver negocio</a>'))
+      .setPopup(new maplibregl.Popup().setHTML('<strong>' + g.negocio.nombre + '</strong><br><a href="https://sitios.my-red.net/cl/’ + g.negocio.slug + '/">Ver negocio</a>'))
       .addTo(map);
     markers.push(marker);
   }
