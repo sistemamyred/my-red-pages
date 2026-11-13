@@ -73,10 +73,10 @@ function generarZonaHTML(geohash5, data) {
       .join('');
     return `
       <article class="negocio" data-negocio-id="${esc(nid)}" data-lat="${n.lat}" data-lon="${n.lon}">
-        <h3><a href=“https://sitios.my-red.net/cl/${esc(n.slug)}/”>${esc(n.nombre)}</a></h3>
+        <h3><a href="https://sitios.my-red.net/cl/${esc(n.slug)}/">${esc(n.nombre)}</a></h3>
         <p class="distancia" data-lat="${n.lat}" data-lon="${n.lon}">—</p>
         <ul class="productos">${prods}</ul>
-        <a href=“https://sitios.my-red.net/cl/${esc(n.slug)}/” class=“btn-ver”>Ver negocio →</a>
+        <a href="https://sitios.my-red.net/cl/${esc(n.slug)}/" class="btn-ver">Ver negocio →</a>
       </article>`;
   }).join('');
 
@@ -133,7 +133,7 @@ footer{text-align:center;padding:24px;color:#666;font-size:.85rem}
 <body>
 <header>
   <h1>Productos disponibles en zona ${esc(geohash5)}</h1>
-  <p>${negocios.length} negocios • ${totalProductos} productos</p>
+  <p>${negocios.length} negocios · ${totalProductos} productos</p>
 </header>
 <main>
   <section>
@@ -195,7 +195,7 @@ footer{text-align:center;padding:24px;color:#666;font-size:.85rem}
         const lat = parseFloat(el.dataset.lat);
         const lon = parseFloat(el.dataset.lon);
         const d = haversine(uLat, uLon, lat, lon);
-        el.textContent = d < 1000 ? `a ${d} m` : `a ${(d/1000).toFixed(1)} km`;
+        el.textContent = d < 1000 ? 'a ' + d + ' m' : 'a ' + (d/1000).toFixed(1) + ' km';
       });
     });
   }
