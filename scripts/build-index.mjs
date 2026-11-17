@@ -1,7 +1,12 @@
 // INICIO DEL ARCHIVO
-// build-index.mjs — Lee el buzón de cambios (Apps Script → Sheet Cambios),
-// aplica los cambios a docs/indice.json, genera backup y marca procesado=1.
-// No lee Sheets ni Drive de negocios. Cumple D3.
+// build-index.mjs — Lee el buzón de cambios, aplica a docs/indice.json,
+// genera backup y marca procesado=1.
+// VERSIÓN 3 — 2026-11-17
+// Cambio v2 → v3:
+//   - Lee zona y pais de los Sheets.
+//   - Construye zona_slug único por país (ej: antofagasta-cl, lima-norte-pe).
+//   - Cada negocio incluye comuna, region, zona, pais, zona_slug.
+// ============================================================
 
 import { google } from 'googleapis';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from 'fs';
@@ -27,6 +32,27 @@ function normalizar(s) {
   return String(s || '').trim().toLowerCase()
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
     .replace(/-/g, ' ').replace(/\s+/g, ' ');
+}
+
+// Slug: NFD sin diacríticos, minúsculas, espacios → guion.
+// "O'Higgins" → "o-higgins", "Ñuble" → "nuble", "Santiago - Centro" → "santiago-centro"
+function slugify(s) {
+  return String(s || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[''`´]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function paisCode(pais) {
+  const p = String(pais || '').trim().toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  if (p === 'chile') return 'cl';
+  if (p === 'peru') return 'pe';
+  return 'xx';
 }
 
 async function main() {
@@ -67,21 +93,44 @@ async function main() {
     }
   }
 
-  // 3) Leer negocios y ubicaciones (solo Sheets centrales)
+  // 3) Leer negocios y ubicaciones
   const [negRes, ubiRes] = await Promise.all([
     sheets.spreadsheets.values.get({ spreadsheetId: SHEETS_NEGOCIOS, range: 'Negocios' }),
     sheets.spreadsheets.values.get({ spreadsheetId: SHEETS_UBICACIONES, range: 'Ubicaciones' }),
   ]);
+
+  // myred_negocios: A=0 negocio_id, B=1 nombre, G=6 slug, J=9 estado,
+  //                 L=11 tipo_establecimiento, M=12 zona
   const negMap = {};
   (negRes.data.values || []).slice(1).forEach(r => {
-    if (r[0]) negMap[r[0]] = { nombre: r[1] || '', slug: r[6] || '', estado: r[9] || '' };
+    if (!r[0]) return;
+    negMap[r[0]] = {
+      nombre: r[1] || '',
+      slug: r[6] || '',
+      estado: r[9] || '',
+      zonaCodigo: (r[12] || '').toString().trim(),
+    };
   });
+
+  // myred_ubicaciones: A=0 negocio_id, C=2 lat, D=3 lon, G=6 direccion,
+  //                    H=7 comuna, I=8 region, J=9 pais
   const ubiMap = {};
   (ubiRes.data.values || []).slice(1).forEach(r => {
+    const negocioId = r[0];
     const lat = parseFloat(r[2]);
     const lon = parseFloat(r[3]);
-    if (!isNaN(lat) && !isNaN(lon) && r[0]) {
-      ubiMap[r[0]] = { lat, lon, geohash5: ngeohash.encode(lat, lon, 5) };
+    const comuna = (r[7] || '').toString().trim();
+    const region = (r[8] || '').toString().trim();
+    const pais = (r[9] || '').toString().trim();
+    if (!isNaN(lat) && !isNaN(lon) && negocioId) {
+      ubiMap[negocioId] = {
+        lat,
+        lon,
+        geohash5: ngeohash.encode(lat, lon, 5),
+        comuna,
+        region,
+        pais,
+      };
     }
   });
 
@@ -118,11 +167,22 @@ async function main() {
       if (idx !== -1) indice.productos.splice(idx, 1);
     }
 
+    // Construir zona_slug (región legible + código país)
+    // Si no hay region, fallback a "zona-{codigo}-{pais}"
+    const pc = paisCode(ubi.pais);
+    const zonaSlugBase = ubi.region ? slugify(ubi.region) : `zona-${neg.zonaCodigo || 'x'}`;
+    const zonaSlug = `${zonaSlugBase}-${pc}`;
+
     indice.negocios[negocioId] = {
       nombre: neg.nombre,
       slug: neg.slug,
       lat: ubi.lat,
       lon: ubi.lon,
+      comuna: ubi.comuna,
+      region: ubi.region,
+      zona: neg.zonaCodigo,
+      pais: ubi.pais,
+      zona_slug: zonaSlug,
     };
     afectados.add(negocioId);
     aplicados++;
@@ -141,10 +201,10 @@ async function main() {
   mkdirSync('docs', { recursive: true });
   writeFileSync('docs/indice.json', JSON.stringify(indice));
 
-  // 7) Lista de afectados (para build-seo)
+  // 7) Lista de afectados
   writeFileSync('.affected.json', JSON.stringify(Array.from(afectados)));
 
-  // 8) Marcar procesados (batch)
+  // 8) Marcar procesados
   const updates = pendientes.map(({ rowNumber }) => ({
     range: `Cambios!E${rowNumber}`,
     values: [[1]],
