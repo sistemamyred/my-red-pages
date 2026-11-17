@@ -1,10 +1,13 @@
 // INICIO DEL ARCHIVO
 // build-seo.mjs — Lee docs/indice.json y genera:
-//   - docs/zona/{geohash5}.html (listado + mapa)
+//   - docs/zona/{zona_slug}.html (una por zona, con todos los negocios de esa zona)
+//   - docs/zona/{geohash5}.html (redirect a la página de zona)
 //   - docs/sitemap.xml
-// No modifica indice.json. No accede a Sheets de negocios.
+// VERSIÓN 3 — 2026-11-17
+// Cambio v2 → v3: agrupa por zona_slug (región + país), no por comuna.
+// ============================================================
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, unlinkSync } from 'fs';
 import { join } from 'path';
 
 const INDICE_PATH = 'docs/indice.json';
@@ -29,51 +32,111 @@ if (!indice.productos || indice.productos.length === 0) {
   console.log('Índice vacío. Generando sitemap mínimo.');
   mkdirSync('docs', { recursive: true });
   writeFileSync(OUT_SITEMAP, '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n</urlset>\n');
+  // Limpiar zona vieja
+  if (existsSync(OUT_ZONA)) {
+    for (const f of readdirSync(OUT_ZONA)) {
+      if (f.endsWith('.html')) {
+        try { unlinkSync(join(OUT_ZONA, f)); } catch (e) {}
+      }
+    }
+  }
   process.exit(0);
 }
 
-// Agrupar por geohash5
+// ─────────────────────────────────────────────────────────────
+// Agrupar por zona_slug. Si un negocio no tiene zona_slug,
+// fallback a "sin-zona-{geohash5}".
+// ─────────────────────────────────────────────────────────────
 const zonas = {};
 for (const p of indice.productos) {
-  const g = p.geohash5;
-  if (!g) continue;
-  if (!zonas[g]) zonas[g] = { negocios: {} };
   const neg = indice.negocios[p.negocio_id];
   if (!neg) continue;
-  if (!zonas[g].negocios[p.negocio_id]) {
-    zonas[g].negocios[p.negocio_id] = {
+
+  const zonaSlug = neg.zona_slug || `sin-zona-${p.geohash5}`;
+  const region = neg.region || zonaSlug;
+  const pais = neg.pais || 'Chile';
+
+  if (!zonas[zonaSlug]) {
+    zonas[zonaSlug] = {
+      region,
+      pais,
+      geohashes: new Set(),
+      comunas: new Set(),
+      negocios: {},
+    };
+  }
+  zonas[zonaSlug].geohashes.add(p.geohash5);
+  if (neg.comuna) zonas[zonaSlug].comunas.add(neg.comuna);
+
+  const nid = p.negocio_id;
+  if (!zonas[zonaSlug].negocios[nid]) {
+    zonas[zonaSlug].negocios[nid] = {
       nombre: neg.nombre,
       slug: neg.slug,
       lat: neg.lat,
       lon: neg.lon,
+      comuna: neg.comuna,
       productos: [],
     };
   }
-  zonas[g].negocios[p.negocio_id].productos.push({
+  zonas[zonaSlug].negocios[nid].productos.push({
     sku: p.sku,
     termino: p.termino,
   });
 }
 
+// Limpiar página viejas antes de regenerar
+if (existsSync(OUT_ZONA)) {
+  for (const f of readdirSync(OUT_ZONA)) {
+    if (f.endsWith('.html')) {
+      try { unlinkSync(join(OUT_ZONA, f)); } catch (e) {}
+    }
+  }
+}
 mkdirSync(OUT_ZONA, { recursive: true });
 
 const esc = (s) => String(s || '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
-function generarZonaHTML(geohash5, data) {
+function generarZonaHTML(zonaSlug, data) {
   const negocios = Object.entries(data.negocios);
   const totalProductos = negocios.reduce((acc, [, n]) => acc + n.productos.length, 0);
   const centLat = negocios[0][1].lat;
   const centLon = negocios[0][1].lon;
 
+  const region = data.region || zonaSlug;
+  const pais = data.pais || 'Chile';
+  const comunasArr = Array.from(data.comunas).sort();
+
+  // Categorías únicas para meta desc
+  const categorias = new Set();
+  for (const [, n] of negocios) {
+    for (const p of n.productos) {
+      const primera = p.termino.split(' ')[0];
+      if (primera) categorias.add(primera);
+    }
+  }
+  const categoriasLista = Array.from(categorias).slice(0, 6);
+
+  const title = `Productos en ${region} (${pais}) — My-RED`;
+
+  const comunasTexto = comunasArr.length > 0
+    ? (comunasArr.length <= 3 ? comunasArr.join(', ') : `${comunasArr.slice(0, 3).join(', ')} y más`)
+    : '';
+  const categoriasTexto = categoriasLista.length > 0 ? categoriasLista.join(', ') : 'productos';
+
+  const metaDesc = `Encuentra ${categoriasTexto} en ${region}${comunasTexto ? ' (' + comunasTexto + ')' : ''}. ${totalProductos} productos en ${negocios.length} negocios locales. My-RED conecta clientes con comercios de tu zona.`;
+
   const negociosItems = negocios.map(([nid, n]) => {
     const prods = n.productos
       .map(p => `<li>${esc(p.termino || p.sku)}</li>`)
       .join('');
+    const comuna = n.comuna ? `<p class="comuna">📍 ${esc(n.comuna)}</p>` : '';
     return `
       <article class="negocio" data-negocio-id="${esc(nid)}" data-lat="${n.lat}" data-lon="${n.lon}">
         <h3><a href="https://sitios.my-red.net/cl/${esc(n.slug)}/">${esc(n.nombre)}</a></h3>
+        ${comuna}
         <p class="distancia" data-lat="${n.lat}" data-lon="${n.lon}">—</p>
         <ul class="productos">${prods}</ul>
         <a href="https://sitios.my-red.net/cl/${esc(n.slug)}/" class="btn-ver">Ver negocio →</a>
@@ -87,14 +150,16 @@ function generarZonaHTML(geohash5, data) {
       "@type": "LocalBusiness",
       "name": n.nombre,
       "url": `https://sitios.my-red.net/cl/${n.slug}/`,
-      "geo": { "@type": "GeoCoordinates", "latitude": n.lat, "longitude": n.lon }
+      "geo": { "@type": "GeoCoordinates", "latitude": n.lat, "longitude": n.lon },
+      ...(n.comuna ? { "address": { "@type": "PostalAddress", "addressLocality": n.comuna } } : {})
     }
   }));
 
   const jsonLd = {
     "@context": "https://schema.org",
     "@type": "ItemList",
-    "name": `Productos disponibles en zona ${geohash5}`,
+    "name": `Productos disponibles en ${region}`,
+    "description": metaDesc,
     "numberOfItems": totalProductos,
     "itemListElement": jsonLdItems
   };
@@ -104,9 +169,14 @@ function generarZonaHTML(geohash5, data) {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Productos disponibles en zona ${esc(geohash5)} — My-RED</title>
-<meta name="description" content="${totalProductos} productos en ${negocios.length} negocios. Encuentra lo que buscas cerca de ti.">
-<link rel="canonical" href="${BASE_URL}/zona/${esc(geohash5)}.html">
+<title>${esc(title)}</title>
+<meta name="description" content="${esc(metaDesc)}">
+<meta name="keywords" content="${esc(region)}, ${esc(pais)}, ${esc(comunasArr.join(', '))}, ${esc(categoriasTexto)}, productos, negocios locales">
+<link rel="canonical" href="${BASE_URL}/zona/${esc(zonaSlug)}.html">
+<meta property="og:title" content="${esc(title)}">
+<meta property="og:description" content="${esc(metaDesc)}">
+<meta property="og:url" content="${BASE_URL}/zona/${esc(zonaSlug)}.html">
+<meta property="og:type" content="website">
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.0.0/dist/maplibre-gl.css">
 <script type="application/ld+json">${JSON.stringify(jsonLd)}</script>
 <style>
@@ -123,17 +193,19 @@ main{max-width:1200px;margin:0 auto;padding:16px;display:grid;grid-template-colu
 .negocio{background:#fff;border-radius:8px;padding:14px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
 .negocio h3{font-size:1rem;margin-bottom:4px}
 .negocio h3 a{color:#2E7D32;text-decoration:none}
+.negocio .comuna{color:#2E7D32;font-size:.8rem;margin-bottom:4px}
 .negocio .distancia{color:#666;font-size:.85rem;margin-bottom:8px}
 .negocio .productos{list-style:none;display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
 .negocio .productos li{background:#E8F5E9;color:#2E7D32;padding:3px 8px;border-radius:12px;font-size:.8rem}
 .negocio .btn-ver{display:inline-block;background:#2E7D32;color:#fff;padding:6px 12px;border-radius:6px;text-decoration:none;font-size:.85rem}
 footer{text-align:center;padding:24px;color:#666;font-size:.85rem}
+footer a{color:#2E7D32;text-decoration:none}
 </style>
 </head>
 <body>
 <header>
-  <h1>Productos disponibles en zona ${esc(geohash5)}</h1>
-  <p>${negocios.length} negocios · ${totalProductos} productos</p>
+  <h1>Productos disponibles en ${esc(region)}</h1>
+  <p>${negocios.length} negocios · ${totalProductos} productos · ${esc(pais)}</p>
 </header>
 <main>
   <section>
@@ -141,7 +213,7 @@ footer{text-align:center;padding:24px;color:#666;font-size:.85rem}
     <div id="mapa" style="display:none"></div>
   </section>
   <aside class="listado">
-    <h2>Negocios cercanos</h2>
+    <h2>Negocios en ${esc(region)}</h2>
     ${negociosItems}
   </aside>
 </main>
@@ -153,47 +225,37 @@ footer{text-align:center;padding:24px;color:#666;font-size:.85rem}
 <script>
 (function(){
   const CENTRO = { lat: ${centLat}, lon: ${centLon} };
-  const markers = [];
-
   function haversine(lat1,lon1,lat2,lon2){
     const R=6371000,toRad=d=>d*Math.PI/180;
     const dLat=toRad(lat2-lat1),dLon=toRad(lon2-lon1);
     const a=Math.sin(dLat/2)**2+Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)**2;
     return Math.round(2*R*Math.asin(Math.sqrt(a)));
   }
-
   const map = new maplibregl.Map({
     container: 'mapa',
     style: 'https://tiles.openfreemap.org/styles/liberty',
     center: [CENTRO.lon, CENTRO.lat],
-    zoom: 12
+    zoom: 11
   });
-
   document.getElementById('mapa-skeleton').style.display = 'none';
   document.getElementById('mapa').style.display = 'block';
-
   map.on('load', () => {
     document.querySelectorAll('.negocio').forEach(el => {
       const lat = parseFloat(el.dataset.lat);
       const lon = parseFloat(el.dataset.lon);
       const name = el.querySelector('h3 a').textContent;
       const slug = el.querySelector('h3 a').getAttribute('href');
-
-      const marker = new maplibregl.Marker({ color: '#2E7D32' })
+      new maplibregl.Marker({ color: '#2E7D32' })
         .setLngLat([lon, lat])
         .setPopup(new maplibregl.Popup().setHTML('<strong>' + name + '</strong><br><a href="' + slug + '">Ver negocio</a>'))
         .addTo(map);
-      markers.push({ el, marker, lat, lon });
     });
   });
-
   if (navigator.geolocation) {
     navigator.geolocation.getCurrentPosition(pos => {
-      const uLat = pos.coords.latitude;
-      const uLon = pos.coords.longitude;
+      const uLat = pos.coords.latitude, uLon = pos.coords.longitude;
       document.querySelectorAll('.distancia').forEach(el => {
-        const lat = parseFloat(el.dataset.lat);
-        const lon = parseFloat(el.dataset.lon);
+        const lat = parseFloat(el.dataset.lat), lon = parseFloat(el.dataset.lon);
         const d = haversine(uLat, uLon, lat, lon);
         el.textContent = d < 1000 ? 'a ' + d + ' m' : 'a ' + (d/1000).toFixed(1) + ' km';
       });
@@ -205,17 +267,47 @@ footer{text-align:center;padding:24px;color:#666;font-size:.85rem}
 </html>`;
 }
 
+function generarRedirectHTML(zonaSlug, region) {
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Redirigiendo a ${esc(region)} — My-RED</title>
+<meta http-equiv="refresh" content="0;url=/zona/${esc(zonaSlug)}.html">
+<link rel="canonical" href="${BASE_URL}/zona/${esc(zonaSlug)}.html">
+<meta name="robots" content="noindex">
+</head>
+<body>
+<p>Redirigiendo a <a href="/zona/${esc(zonaSlug)}.html">${esc(region)}</a>…</p>
+</body>
+</html>`;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Generar páginas por zona + redirects desde geohash5
+// ─────────────────────────────────────────────────────────────
 const zonasGeneradas = [];
-for (const [geohash5, data] of Object.entries(zonas)) {
-  const html = generarZonaHTML(geohash5, data);
-  writeFileSync(join(OUT_ZONA, `${geohash5}.html`), html);
-  zonasGeneradas.push(geohash5);
+const redirectsGenerados = [];
+
+for (const [zonaSlug, data] of Object.entries(zonas)) {
+  // Página por zona
+  const html = generarZonaHTML(zonaSlug, data);
+  writeFileSync(join(OUT_ZONA, `${zonaSlug}.html`), html);
+  zonasGeneradas.push(zonaSlug);
+
+  // Redirects desde cada geohash5 de esa zona
+  for (const gh of data.geohashes) {
+    if (gh === zonaSlug) continue;
+    const redirectHTML = generarRedirectHTML(zonaSlug, data.region);
+    writeFileSync(join(OUT_ZONA, `${gh}.html`), redirectHTML);
+    redirectsGenerados.push(gh);
+  }
 }
 
 // Sitemap
 const urls = [
   `${BASE_URL}/`,
-  ...zonasGeneradas.map(g => `${BASE_URL}/zona/${g}.html`),
+  ...zonasGeneradas.map(z => `${BASE_URL}/zona/${z}.html`),
 ];
 const sitemap = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
@@ -224,5 +316,7 @@ ${urls.map(u => `  <url><loc>${u}</loc></url>`).join('\n')}
 `;
 writeFileSync(OUT_SITEMAP, sitemap);
 
-console.log(`Generadas ${zonasGeneradas.length} zonas. Sitemap: ${urls.length} URLs.`);
+console.log(`Generadas ${zonasGeneradas.length} páginas de zona: ${zonasGeneradas.join(', ')}`);
+console.log(`Generados ${redirectsGenerados.length} redirects desde geohash5.`);
+console.log(`Sitemap: ${urls.length} URLs.`);
 // FIN DEL ARCHIVO
