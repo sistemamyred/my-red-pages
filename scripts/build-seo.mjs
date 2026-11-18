@@ -1,25 +1,32 @@
 // INICIO DEL ARCHIVO
 // build-seo.mjs — Lee docs/indice.json y genera:
-//   - docs/zona/{zona_slug}.html (una por zona, con todos los negocios de esa zona)
-//   - docs/zona/{geohash5}.html (redirect a la página de zona)
+//   - docs/zona/{zona_slug}.html  (una por zona: region + país, con sus negocios)
+//   - docs/zona/{geohash5}.html   (redirect a la página de su zona)
 //   - docs/sitemap.xml
-// VERSIÓN 3 — 2026-11-17
-// Cambio v2 → v3: agrupa por zona_slug (región + país), no por comuna.
+// VERSIÓN 4 — 2026-11-18
+// Cambios v3 → v4:
+//   - NO publica páginas con zona inválida (nada de "sin-zona-*"): se omite la zona y
+//     se reporta en el log. Una URL de máquina en el sitemap es peor que no tener página.
+//   - Enlaces al sitio con ruta válida (/cl/{slug}/index.html) y canonical coherente.
+//   - JSON-LD con address (comuna/region/pais) además de geo.
+//   - Muestra la comuna en el listado (keyword local real: "arroz Calama").
+//   - Sitemap solo con páginas válidas + lastmod; salida determinista (sin churn).
 // ============================================================
-
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, unlinkSync } from 'fs';
 import { join } from 'path';
-
 const INDICE_PATH = 'docs/indice.json';
 const OUT_ZONA = 'docs/zona';
 const OUT_SITEMAP = 'docs/sitemap.xml';
 const BASE_URL = process.env.BASE_URL || 'https://my-red.net';
-
+// URL pública del negocio. El objeto en R2 es un archivo exacto: sin index.html da 404.
+// Si algún día se habilita un origen que sirva /cl/{slug}/, se cambia SOLO esta línea.
+const urlSitio = (slug) => `https://sitios.my-red.net/cl/${slug}/index.html`;
+// zona_slug válido: slug + sufijo de país. Ej: antofagasta-cl, biobio-cl, lima-norte-pe
+const ZONA_SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*-(cl|pe)$/;
 if (!existsSync(INDICE_PATH)) {
   console.log('No existe indice.json. Nada que generar.');
   process.exit(0);
 }
-
 let indice;
 try {
   indice = JSON.parse(readFileSync(INDICE_PATH, 'utf8'));
@@ -27,143 +34,146 @@ try {
   console.error('indice.json corrupto, abortando build-seo:', e.message);
   process.exit(1);
 }
-
-if (!indice.productos || indice.productos.length === 0) {
-  console.log('Índice vacío. Generando sitemap mínimo.');
-  mkdirSync('docs', { recursive: true });
-  writeFileSync(OUT_SITEMAP, '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n</urlset>\n');
-  // Limpiar zona vieja
-  if (existsSync(OUT_ZONA)) {
-    for (const f of readdirSync(OUT_ZONA)) {
-      if (f.endsWith('.html')) {
-        try { unlinkSync(join(OUT_ZONA, f)); } catch (e) {}
-      }
-    }
-  }
-  process.exit(0);
-}
-
-// ─────────────────────────────────────────────────────────────
-// Agrupar por zona_slug. Si un negocio no tiene zona_slug,
-// fallback a "sin-zona-{geohash5}".
-// ─────────────────────────────────────────────────────────────
-const zonas = {};
-for (const p of indice.productos) {
-  const neg = indice.negocios[p.negocio_id];
-  if (!neg) continue;
-
-  const zonaSlug = neg.zona_slug || `sin-zona-${p.geohash5}`;
-  const region = neg.region || zonaSlug;
-  const pais = neg.pais || 'Chile';
-
-  if (!zonas[zonaSlug]) {
-    zonas[zonaSlug] = {
-      region,
-      pais,
-      geohashes: new Set(),
-      comunas: new Set(),
-      negocios: {},
-    };
-  }
-  zonas[zonaSlug].geohashes.add(p.geohash5);
-  if (neg.comuna) zonas[zonaSlug].comunas.add(neg.comuna);
-
-  const nid = p.negocio_id;
-  if (!zonas[zonaSlug].negocios[nid]) {
-    zonas[zonaSlug].negocios[nid] = {
-      nombre: neg.nombre,
-      slug: neg.slug,
-      lat: neg.lat,
-      lon: neg.lon,
-      comuna: neg.comuna,
-      productos: [],
-    };
-  }
-  zonas[zonaSlug].negocios[nid].productos.push({
-    sku: p.sku,
-    termino: p.termino,
-  });
-}
-
-// Limpiar página viejas antes de regenerar
-if (existsSync(OUT_ZONA)) {
-  for (const f of readdirSync(OUT_ZONA)) {
-    if (f.endsWith('.html')) {
-      try { unlinkSync(join(OUT_ZONA, f)); } catch (e) {}
-    }
-  }
-}
-mkdirSync(OUT_ZONA, { recursive: true });
-
 const esc = (s) => String(s || '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-
+const paisCodigoIso = (pais) => {
+  const p = String(pais || '').trim().toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  if (p === 'chile') return 'CL';
+  if (p === 'peru') return 'PE';
+  return '';
+};
+function limpiarZona() {
+  if (!existsSync(OUT_ZONA)) return;
+  for (const f of readdirSync(OUT_ZONA)) {
+    if (!f.endsWith('.html')) continue;
+    try { unlinkSync(join(OUT_ZONA, f)); } catch (e) { /* ignorar */ }
+  }
+}
+function sitemapMinimo() {
+  mkdirSync('docs', { recursive: true });
+  const hoy = new Date().toISOString().slice(0, 10);
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>${BASE_URL}/</loc><lastmod>${hoy}</lastmod></url>
+</urlset>
+`;
+  writeFileSync(OUT_SITEMAP, xml);
+}
+// ─────────────────────────────────────────────────────────────
+// Agrupar por zona_slug. Las zonas sin region o sin zona_slug
+// válido se OMITEN (nunca se publican con nombre de máquina).
+// ─────────────────────────────────────────────────────────────
+const zonas = {};
+const omitidas = new Map();
+if (Array.isArray(indice.productos) && indice.productos.length > 0) {
+  for (const p of indice.productos) {
+    if (!p || !p.negocio_id || !p.sku) continue;
+    const neg = indice.negocios ? indice.negocios[p.negocio_id] : null;
+    if (!neg) continue;
+    const zonaSlug = String(neg.zona_slug || '').trim();
+    const region = String(neg.region || '').trim();
+    const motivo = !zonaSlug ? 'sin zona_slug' : (!ZONA_SLUG_RE.test(zonaSlug) ? `zona_slug inválido (${zonaSlug})` : (!region ? 'sin region' : ''));
+    if (motivo) {
+      omitidas.set(p.negocio_id, motivo);
+      continue;
+    }
+    if (!zonas[zonaSlug]) {
+      zonas[zonaSlug] = {
+        region,
+        pais: String(neg.pais || '').trim(),
+        geohashes: new Set(),
+        comunas: new Set(),
+        negocios: {},
+      };
+    }
+    if (p.geohash5) zonas[zonaSlug].geohashes.add(p.geohash5);
+    if (neg.comuna) zonas[zonaSlug].comunas.add(neg.comuna);
+    const nid = p.negocio_id;
+    if (!zonas[zonaSlug].negocios[nid]) {
+      zonas[zonaSlug].negocios[nid] = {
+        nombre: neg.nombre || '',
+        slug: neg.slug || '',
+        lat: neg.lat,
+        lon: neg.lon,
+        comuna: neg.comuna || '',
+        productos: [],
+      };
+    }
+    zonas[zonaSlug].negocios[nid].productos.push({
+      sku: p.sku,
+      termino: p.termino || p.sku,
+    });
+  }
+}
 function generarZonaHTML(zonaSlug, data) {
-  const negocios = Object.entries(data.negocios);
+  // Orden determinista (evita commits por reordenamiento)
+  const negocios = Object.entries(data.negocios)
+    .sort((a, b) => String(a[1].nombre).localeCompare(String(b[1].nombre), 'es'));
+  for (const [, n] of negocios) {
+    n.productos.sort((a, b) => String(a.termino).localeCompare(String(b.termino), 'es'));
+  }
   const totalProductos = negocios.reduce((acc, [, n]) => acc + n.productos.length, 0);
-  const centLat = negocios[0][1].lat;
-  const centLon = negocios[0][1].lon;
-
-  const region = data.region || zonaSlug;
-  const pais = data.pais || 'Chile';
-  const comunasArr = Array.from(data.comunas).sort();
-
-  // Categorías únicas para meta desc
+  const comunas = Array.from(data.comunas).sort((a, b) => a.localeCompare(b, 'es'));
+  const comunaTexto = comunas.length > 0 ? comunas.slice(0, 6).join(', ') : '';
+  // Centro del mapa: promedio de los negocios (más estable que el primero)
+  const centLat = negocios.reduce((a, [, n]) => a + Number(n.lat || 0), 0) / Math.max(negocios.length, 1);
+  const centLon = negocios.reduce((a, [, n]) => a + Number(n.lon || 0), 0) / Math.max(negocios.length, 1);
+  const puntos = negocios.map(([, n]) => [Number(n.lon), Number(n.lat)]);
+  // Categorías = primera palabra del término, para meta description
   const categorias = new Set();
   for (const [, n] of negocios) {
     for (const p of n.productos) {
-      const primera = p.termino.split(' ')[0];
+      const primera = String(p.termino || '').split(' ')[0];
       if (primera) categorias.add(primera);
     }
   }
-  const categoriasLista = Array.from(categorias).slice(0, 6);
-
+  const categoriasLista = Array.from(categorias).slice(0, 8);
+  const region = data.region;
+  const pais = data.pais || 'Chile';
+  const ISO = paisCodigoIso(pais);
+  const plural = (n, uno, varios) => `${n} ${n === 1 ? uno : varios}`;
   const title = `Productos en ${region} (${pais}) — My-RED`;
-
-  const comunasTexto = comunasArr.length > 0
-    ? (comunasArr.length <= 3 ? comunasArr.join(', ') : `${comunasArr.slice(0, 3).join(', ')} y más`)
-    : '';
-  const categoriasTexto = categoriasLista.length > 0 ? categoriasLista.join(', ') : 'productos';
-
-  const metaDesc = `Encuentra ${categoriasTexto} en ${region}${comunasTexto ? ' (' + comunasTexto + ')' : ''}. ${totalProductos} productos en ${negocios.length} negocios locales. My-RED conecta clientes con comercios de tu zona.`;
-
+  const metaDesc = categoriasLista.length > 0
+    ? `Encuentra ${categoriasLista.join(', ')} y más en ${region}${comunaTexto ? ` (${comunaTexto})` : ''}. ${plural(totalProductos, 'producto', 'productos')} en ${plural(negocios.length, 'negocio local', 'negocios locales')}. My-RED conecta clientes con comercios de tu zona.`
+    : `${plural(totalProductos, 'producto', 'productos')} en ${plural(negocios.length, 'negocio', 'negocios')} de ${region}${comunaTexto ? ` (${comunaTexto})` : ''}. Encuentra lo que buscas en tu zona.`;
   const negociosItems = negocios.map(([nid, n]) => {
-    const prods = n.productos
-      .map(p => `<li>${esc(p.termino || p.sku)}</li>`)
-      .join('');
-    const comuna = n.comuna ? `<p class="comuna">📍 ${esc(n.comuna)}</p>` : '';
+    const prods = n.productos.map(p => `<li>${esc(p.termino)}</li>`).join('');
+    const href = urlSitio(n.slug);
     return `
       <article class="negocio" data-negocio-id="${esc(nid)}" data-lat="${n.lat}" data-lon="${n.lon}">
-        <h3><a href="https://sitios.my-red.net/cl/${esc(n.slug)}/">${esc(n.nombre)}</a></h3>
-        ${comuna}
+        <h3><a href="${esc(href)}">${esc(n.nombre)}</a></h3>
+        ${n.comuna ? `<p class="comuna">📍 ${esc(n.comuna)}</p>` : ''}
         <p class="distancia" data-lat="${n.lat}" data-lon="${n.lon}">—</p>
         <ul class="productos">${prods}</ul>
-        <a href="https://sitios.my-red.net/cl/${esc(n.slug)}/" class="btn-ver">Ver negocio →</a>
+        <a href="${esc(href)}" class="btn-ver">Ver negocio →</a>
       </article>`;
   }).join('');
-
   const jsonLdItems = negocios.map(([nid, n], i) => ({
-    "@type": "ListItem",
-    "position": i + 1,
-    "item": {
-      "@type": "LocalBusiness",
-      "name": n.nombre,
-      "url": `https://sitios.my-red.net/cl/${n.slug}/`,
-      "geo": { "@type": "GeoCoordinates", "latitude": n.lat, "longitude": n.lon },
-      ...(n.comuna ? { "address": { "@type": "PostalAddress", "addressLocality": n.comuna } } : {})
-    }
+    '@type': 'ListItem',
+    position: i + 1,
+    item: {
+      '@type': 'LocalBusiness',
+      name: n.nombre,
+      url: urlSitio(n.slug),
+      address: {
+        '@type': 'PostalAddress',
+        ...(n.comuna ? { addressLocality: n.comuna } : {}),
+        addressRegion: region,
+        ...(ISO ? { addressCountry: ISO } : {}),
+      },
+      geo: { '@type': 'GeoCoordinates', latitude: Number(n.lat), longitude: Number(n.lon) },
+    },
   }));
-
   const jsonLd = {
-    "@context": "https://schema.org",
-    "@type": "ItemList",
-    "name": `Productos disponibles en ${region}`,
-    "description": metaDesc,
-    "numberOfItems": totalProductos,
-    "itemListElement": jsonLdItems
+    '@context': 'https://schema.org',
+    '@type': 'ItemList',
+    name: `Productos disponibles en ${region}`,
+    description: metaDesc,
+    numberOfItems: totalProductos,
+    itemListElement: jsonLdItems,
   };
-
   return `<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -171,7 +181,7 @@ function generarZonaHTML(zonaSlug, data) {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)}</title>
 <meta name="description" content="${esc(metaDesc)}">
-<meta name="keywords" content="${esc(region)}, ${esc(pais)}, ${esc(comunasArr.join(', '))}, ${esc(categoriasTexto)}, productos, negocios locales">
+<meta name="keywords" content="${esc(region)}, ${esc(comunaTexto)}, ${esc(categoriasLista.join(', '))}, productos, negocios locales, comprar">
 <link rel="canonical" href="${BASE_URL}/zona/${esc(zonaSlug)}.html">
 <meta property="og:title" content="${esc(title)}">
 <meta property="og:description" content="${esc(metaDesc)}">
@@ -205,7 +215,7 @@ footer a{color:#2E7D32;text-decoration:none}
 <body>
 <header>
   <h1>Productos disponibles en ${esc(region)}</h1>
-  <p>${negocios.length} negocios · ${totalProductos} productos · ${esc(pais)}</p>
+  <p>${negocios.length} negocios · ${totalProductos} productos · ${esc(pais)}${comunaTexto ? ` · ${esc(comunaTexto)}` : ''}</p>
 </header>
 <main>
   <section>
@@ -225,6 +235,7 @@ footer a{color:#2E7D32;text-decoration:none}
 <script>
 (function(){
   const CENTRO = { lat: ${centLat}, lon: ${centLon} };
+  const PUNTOS = ${JSON.stringify(puntos)};
   function haversine(lat1,lon1,lat2,lon2){
     const R=6371000,toRad=d=>d*Math.PI/180;
     const dLat=toRad(lat2-lat1),dLon=toRad(lon2-lon1);
@@ -243,13 +254,22 @@ footer a{color:#2E7D32;text-decoration:none}
     document.querySelectorAll('.negocio').forEach(el => {
       const lat = parseFloat(el.dataset.lat);
       const lon = parseFloat(el.dataset.lon);
-      const name = el.querySelector('h3 a').textContent;
-      const slug = el.querySelector('h3 a').getAttribute('href');
+      const nombre = el.querySelector('h3 a').textContent;
+      const href = el.querySelector('h3 a').getAttribute('href');
       new maplibregl.Marker({ color: '#2E7D32' })
         .setLngLat([lon, lat])
-        .setPopup(new maplibregl.Popup().setHTML('<strong>' + name + '</strong><br><a href="' + slug + '">Ver negocio</a>'))
+        .setPopup(new maplibregl.Popup().setHTML('<strong>' + nombre + '</strong><br><a href="' + href + '">Ver negocio</a>'))
         .addTo(map);
     });
+    if (PUNTOS.length > 1) {
+      const lons = PUNTOS.map(p => p[0]);
+      const lats = PUNTOS.map(p => p[1]);
+      map.fitBounds(
+        [[Math.min.apply(null, lons), Math.min.apply(null, lats)],
+         [Math.max.apply(null, lons), Math.max.apply(null, lats)]],
+        { padding: 40, maxZoom: 13, duration: 0 }
+      );
+    }
   });
   if (navigator.geolocation) {
     navigator.geolocation.getCurrentPosition(pos => {
@@ -266,7 +286,7 @@ footer a{color:#2E7D32;text-decoration:none}
 </body>
 </html>`;
 }
-
+// Redirect (meta refresh + canonical) desde la URL vieja por geohash
 function generarRedirectHTML(zonaSlug, region) {
   return `<!DOCTYPE html>
 <html lang="es">
@@ -282,41 +302,57 @@ function generarRedirectHTML(zonaSlug, region) {
 </body>
 </html>`;
 }
-
 // ─────────────────────────────────────────────────────────────
-// Generar páginas por zona + redirects desde geohash5
+// Regenerar docs/zona/ completo (limpia páginas viejas incl. sin-zona-*)
 // ─────────────────────────────────────────────────────────────
+limpiarZona();
+mkdirSync(OUT_ZONA, { recursive: true });
+if (Object.keys(zonas).length === 0) {
+  console.log('Índice sin zonas válidas: no se generan páginas de zona.');
+  if (omitidas.size > 0) {
+    const muestra = Array.from(omitidas.entries()).slice(0, 8)
+      .map(([nid, motivo]) => `${nid}: ${motivo}`).join(' | ');
+    console.log(`Omitidas ${omitidas.size}: ${muestra}${omitidas.size > 8 ? ` … (+${omitidas.size - 8})` : ''}`);
+  }
+  sitemapMinimo();
+  process.exit(0);
+}
 const zonasGeneradas = [];
 const redirectsGenerados = [];
-
-for (const [zonaSlug, data] of Object.entries(zonas)) {
-  // Página por zona
-  const html = generarZonaHTML(zonaSlug, data);
-  writeFileSync(join(OUT_ZONA, `${zonaSlug}.html`), html);
+const geohashUsado = new Map(); // geohash5 → zonaSlug (detecta colisiones entre zonas)
+for (const zonaSlug of Object.keys(zonas).sort()) {
+  const data = zonas[zonaSlug];
+  writeFileSync(join(OUT_ZONA, `${zonaSlug}.html`), generarZonaHTML(zonaSlug, data));
   zonasGeneradas.push(zonaSlug);
-
-  // Redirects desde cada geohash5 de esa zona
-  for (const gh of data.geohashes) {
+  for (const gh of Array.from(data.geohashes).sort()) {
     if (gh === zonaSlug) continue;
-    const redirectHTML = generarRedirectHTML(zonaSlug, data.region);
-    writeFileSync(join(OUT_ZONA, `${gh}.html`), redirectHTML);
+    if (geohashUsado.has(gh) && geohashUsado.get(gh) !== zonaSlug) {
+      console.warn(`Geohash ${gh} reclamado por ${geohashUsado.get(gh)} y ${zonaSlug}; se conserva el primero.`);
+      continue;
+    }
+    geohashUsado.set(gh, zonaSlug);
+    writeFileSync(join(OUT_ZONA, `${gh}.html`), generarRedirectHTML(zonaSlug, data.region));
     redirectsGenerados.push(gh);
   }
 }
-
-// Sitemap
+// Sitemap: home + páginas de zona válidas
+const hoy = new Date().toISOString().slice(0, 10);
 const urls = [
-  `${BASE_URL}/`,
-  ...zonasGeneradas.map(z => `${BASE_URL}/zona/${z}.html`),
+  { loc: `${BASE_URL}/`, lastmod: hoy },
+  ...zonasGeneradas.map(z => ({ loc: `${BASE_URL}/zona/${z}.html`, lastmod: hoy })),
 ];
 const sitemap = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-${urls.map(u => `  <url><loc>${u}</loc></url>`).join('\n')}
+${urls.map(u => `  <url><loc>${u.loc}</loc><lastmod>${u.lastmod}</lastmod></url>`).join('\n')}
 </urlset>
 `;
 writeFileSync(OUT_SITEMAP, sitemap);
-
 console.log(`Generadas ${zonasGeneradas.length} páginas de zona: ${zonasGeneradas.join(', ')}`);
 console.log(`Generados ${redirectsGenerados.length} redirects desde geohash5.`);
 console.log(`Sitemap: ${urls.length} URLs.`);
+if (omitidas.size > 0) {
+  const muestra = Array.from(omitidas.entries()).slice(0, 8)
+    .map(([nid, motivo]) => `${nid}: ${motivo}`).join(' | ');
+  console.log(`Omitidas ${omitidas.size} (no se publican): ${muestra}${omitidas.size > 8 ? ` … (+${omitidas.size - 8})` : ''}`);
+}
 // FIN DEL ARCHIVO
