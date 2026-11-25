@@ -1,11 +1,42 @@
 <!-- INICIO DEL ARCHIVO -->
+<!--
+  docs/index.html — Buscador público My-RED
+  VERSIÓN 3 — 2026-11-25
+  
+  Cambios v2 → v3:
+    - FIX CRÍTICO: comillas tipográficas (') dentro del JS rompían TODO el bloque
+      <script>. Esto impedía que Fuse.js inicializara, que el mapa cargara y que
+      el botón "Buscar" hiciera algo. La causa estaba en el archivo, no en los datos.
+    - FIX CRÍTICO: enlaces a sitios sin /index.html → 404 en R2.
+      Ahora todas las URLs apuntan a https://sitios.my-red.net/cl/{slug}/index.html
+    - Los nombres de productos/servicios se muestran con p.nombre si existe;
+      si no, se cae al p.termino (SKU normalizado). Forward-compatible con el
+      cambio de D4 (agregar "nombre" al payload del buzón).
+    - Negocios sin coordenadas no rompen el mapa: se listan pero no se mapean.
+    - Etiqueta por tipo de negocio: "Productos", "Servicios", "Platos",
+      "Reservas", "Actividades". Se adapta sola cuando indice.negocios[nid]
+      traiga tipo_establecimiento (futura actualización de build-index.mjs).
+    - Navegador a /zona/index.html (índice de zonas para rastreo de Google).
+      Ese archivo lo genera build-seo.mjs v4.2.
+    - <noscript> con enlaces de respaldo para rastreadores y navegadores viejos.
+    - Cache-buster en el fetch de indice.json (evita servir caché viejo tras
+      el workflow de cada 15 min).
+    - Contador de resultados y comuna/región visible en cada tarjeta.
+    - Escapado de HTML en nombres de negocio/producto (defensa contra XSS).
+  
+  Requiere:
+    - indice.json con estructura v1: {productos: [{sku, termino, geohash5,
+      negocio_id, nombre?}], negocios: {nid: {nombre, slug, lat, lon, comuna,
+      region, zona, pais, zona_slug, tipo_establecimiento?}}}
+    - indice.backup.json como fallback si el principal está corrupto.
+-->
 <!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Buscar productos — My-RED</title>
-<meta name="description" content="Encuentra los productos disponibles en los negocios cercanos a ti. My-RED conecta clientes y comercios locales.">
+<title>Buscar productos y servicios — My-RED</title>
+<meta name="description" content="Encuentra los productos y servicios disponibles en los negocios cercanos a ti. My-RED conecta clientes y comercios locales.">
 <link rel="canonical" href="https://my-red.net/">
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.0.0/dist/maplibre-gl.css">
 <style>
@@ -14,6 +45,8 @@ body{font-family:system-ui,-apple-system,sans-serif;color:#212121;background:#fa
 header{background:linear-gradient(135deg,#2E7D32,#4CAF50);color:#fff;padding:32px 16px;text-align:center}
 header h1{font-size:1.8rem;margin-bottom:6px}
 header p{opacity:.9;font-size:1rem;max-width:600px;margin:0 auto}
+header .zonas{margin-top:10px;font-size:.9rem}
+header .zonas a{color:#fff;text-decoration:underline}
 main{max-width:1200px;margin:0 auto;padding:16px;display:grid;grid-template-columns:1fr;gap:16px}
 @media(min-width:900px){main{grid-template-columns:60% 40%}}
 .buscador{display:flex;gap:8px;margin-bottom:16px;grid-column:1/-1}
@@ -26,23 +59,28 @@ main{max-width:1200px;margin:0 auto;padding:16px;display:grid;grid-template-colu
 .negocio{background:#fff;border-radius:8px;padding:14px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
 .negocio h3{font-size:1rem;margin-bottom:4px}
 .negocio h3 a{color:#2E7D32;text-decoration:none}
+.negocio .comuna{color:#2E7D32;font-size:.85rem;margin-bottom:4px}
 .negocio .distancia{color:#666;font-size:.85rem;margin-bottom:8px}
+.negocio .etiqueta-items{color:#666;font-size:.8rem;margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:.03em}
 .negocio .productos{list-style:none;display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
 .negocio .productos li{background:#E8F5E9;color:#2E7D32;padding:3px 8px;border-radius:12px;font-size:.8rem}
 .negocio .btn-ver{display:inline-block;background:#2E7D32;color:#fff;padding:6px 12px;border-radius:6px;text-decoration:none;font-size:.85rem}
 .estado{color:#666;text-align:center;padding:20px;font-size:.9rem}
+.noscript{max-width:800px;margin:20px auto;padding:20px;background:#FFF3E0;border-radius:8px;color:#E65100;font-size:.95rem}
+.noscript a{color:#E65100;font-weight:600}
 footer{text-align:center;padding:32px 16px;color:#666;font-size:.85rem}
 footer .legal{font-size:.75rem;color:#999;margin-top:6px}
 </style>
 </head>
 <body>
 <header>
-  <h1>🔍 Buscar productos — My-RED</h1>
+  <h1>🔍 Buscar productos y servicios — My-RED</h1>
   <p>Encuentra lo que buscas en los negocios cercanos a ti</p>
+  <p class="zonas"><a href="/zona/index.html">📍 Ver todas las zonas</a></p>
 </header>
 <main>
   <form class="buscador" onsubmit="event.preventDefault(); buscar();">
-    <input id="buscador" type="search" placeholder="Ej: arroz, leche, pan…" autocomplete="off">
+    <input id="buscador" type="search" placeholder="Ej: arroz, leche, posesión efectiva, contrato…" autocomplete="off">
     <button type="submit">Buscar</button>
   </form>
   <section>
@@ -53,6 +91,12 @@ footer .legal{font-size:.75rem;color:#999;margin-top:6px}
     <div id="lista" class="estado">Escribe algo para empezar.</div>
   </aside>
 </main>
+<noscript>
+  <div class="noscript">
+    <p>El buscador interactivo requiere JavaScript. Mientras tanto, puedes explorar por zona:</p>
+    <p style="margin-top:8px;"><a href="/zona/index.html">Ver todas las zonas →</a></p>
+  </div>
+</noscript>
 <footer>
   <p>My-RED facilita la conexión entre clientes y comercios locales.</p>
   <p class="legal">Los precios, stock y disponibilidad son responsabilidad de cada negocio.</p>
@@ -60,24 +104,69 @@ footer .legal{font-size:.75rem;color:#999;margin-top:6px}
 <script src="https://cdn.jsdelivr.net/npm/fuse.js@7.0.0/dist/fuse.min.js"></script>
 <script src="https://unpkg.com/maplibre-gl@4.0.0/dist/maplibre-gl.js"></script>
 <script>
+/* ============================================================
+   BUSCADOR PÚBLICO MY-RED v3
+   FIX CRÍTICO: este bloque usaba comillas tipográficas (') que
+   rompían la sintaxis del JS. Ahora usa SOLO comillas rectas.
+   ============================================================ */
+
 let fuse = null;
 let indice = null;
 let ubicacionCliente = null;
 let map = null;
 let markers = [];
 
+/* Normaliza texto para búsqueda y comparación. */
 function normalizar(s) {
   return String(s || '').trim().toLowerCase()
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
 
-function haversine(lat1,lon1,lat2,lon2){
-  const R=6371000,toRad=d=>d*Math.PI/180;
-  const dLat=toRad(lat2-lat1),dLon=toRad(lon2-lon1);
-  const a=Math.sin(dLat/2)**2+Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)**2;
-  return Math.round(2*R*Math.asin(Math.sqrt(a)));
+/* Escapa HTML para evitar inyección en nombres de negocio/producto. */
+function escaparHtml(s) {
+  return String(s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
+/* URL canónica del sitio de un negocio. R2 no tiene directory index: sin /index.html da 404. */
+function urlSitio(slug) {
+  return 'https://sitios.my-red.net/cl/' + slug + '/index.html';
+}
+
+/* Distancia en metros entre dos coordenadas (haversine). */
+function haversine(lat1, lon1, lat2, lon2) {
+  const R = 6371000, toRad = d => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return Math.round(2 * R * Math.asin(Math.sqrt(a)));
+}
+
+/* Nombre visible del producto/servicio. Si el índice trae "nombre" (D4 futuro), lo usa. */
+function nombreProducto(p) {
+  if (p && p.nombre && String(p.nombre).trim()) return String(p.nombre).trim();
+  const base = String((p && (p.termino || p.sku)) || '');
+  return base.replace(/-/g, ' ').toLowerCase();
+}
+
+/* Etiqueta de los ítems según el tipo de negocio (forward-compatible). */
+function etiquetaItems(tipo) {
+  const t = String(tipo || '').toUpperCase();
+  if (t === 'RESTAURANTE') return 'Platos y menú';
+  if (t === 'SERVICIO' || t === 'SERVICIO_PERSONAL' || t === 'CONSTRUCCION'
+      || t === 'TALLER' || t === 'INDUSTRIA' || t === 'OTRO') return 'Servicios';
+  if (t === 'ESTETICA' || t === 'ALOJAMIENTO' || t === 'ENTRETENCION'
+      || t === 'ARRIENDO' || t === 'TRANSPORTE') return 'Reservas y disponibilidad';
+  if (t === 'IGLESIA' || t === 'ORGANIZACION') return 'Actividades';
+  if (t === 'ALMACEN' || t === 'TIENDA' || t === 'DISTRIBUIDORA'
+      || t === 'COMERCIO' || t === 'AGRICULTURA') return 'Productos';
+  return 'Productos y servicios';
+}
+
+/* Inicializa el mapa una sola vez. */
 function initMapa() {
   if (map) return;
   map = new maplibregl.Map({
@@ -94,28 +183,47 @@ function initMapa() {
   }
 }
 
+/* Carga indice.json (con fallback a backup y cache-buster). */
 async function cargarIndice() {
   if (indice) return;
+  const cb = '?v=' + Date.now();
   try {
-    let res = await fetch('indice.json');
+    let res = await fetch('indice.json' + cb);
     if (!res.ok) {
       console.warn('indice.json no disponible, intentando backup');
-      res = await fetch('indice.backup.json');
+      res = await fetch('indice.backup.json' + cb);
     }
     if (!res.ok) throw new Error('Sin índice disponible');
     indice = await res.json();
+
+    if (!indice || !Array.isArray(indice.productos) || !indice.negocios) {
+      throw new Error('Índice con estructura inválida');
+    }
+
+    /* Llaves de Fuse: "termino" siempre. "nombre_norm" si el índice ya trae "nombre". */
+    const hayNombre = indice.productos.some(p => p && p.nombre);
+    if (hayNombre) {
+      indice.productos = indice.productos.map(p => ({
+        ...p,
+        nombre_norm: normalizar(p.nombre || '')
+      }));
+    }
+    const keys = hayNombre ? ['termino', 'nombre_norm'] : ['termino'];
+
     fuse = new Fuse(indice.productos, {
-      keys: ['termino'],
+      keys: keys,
       threshold: 0.4,
       ignoreLocation: true,
       minMatchCharLength: 2
     });
   } catch (e) {
     console.error('Error cargando índice:', e);
-    document.getElementById('lista').innerHTML = '<p class="estado">No se pudo cargar el índice. Intenta más tarde.</p>';
+    document.getElementById('lista').innerHTML =
+      '<p class="estado">No se pudo cargar el índice. Intenta más tarde.</p>';
   }
 }
 
+/* Pide ubicación del cliente (una sola vez). */
 async function pedirUbicacion() {
   if (ubicacionCliente) return ubicacionCliente;
   return new Promise((resolve) => {
@@ -131,21 +239,28 @@ async function pedirUbicacion() {
   });
 }
 
+/* Busca y renderiza resultados. */
 async function buscar() {
   const q = document.getElementById('buscador').value.trim();
   const lista = document.getElementById('lista');
-  if (!q) { lista.innerHTML = '<p class="estado">Escribe algo para empezar.</p>'; return; }
+  if (!q) {
+    lista.innerHTML = '<p class="estado">Escribe algo para empezar.</p>';
+    return;
+  }
   lista.innerHTML = '<p class="estado">Buscando…</p>';
 
   await cargarIndice();
-  if (!fuse) { lista.innerHTML = '<p class="estado">Índice no disponible.</p>'; return; }
+  if (!fuse) {
+    lista.innerHTML = '<p class="estado">Índice no disponible.</p>';
+    return;
+  }
 
   await pedirUbicacion();
   initMapa();
 
-  const resultados = fuse.search(normalizar(q), { limit: 100 });
+  const resultados = fuse.search(normalizar(q), { limit: 200 });
 
-  // Agrupar por negocio
+  /* Agrupar por negocio. */
   const grupos = {};
   for (const r of resultados) {
     const p = r.item;
@@ -154,65 +269,99 @@ async function buscar() {
     if (!grupos[p.negocio_id]) {
       grupos[p.negocio_id] = { negocio: neg, negocio_id: p.negocio_id, productos: [] };
     }
-    grupos[p.negocio_id].productos.push(p.sku);
+    grupos[p.negocio_id].productos.push(p);
   }
 
-  // Calcular distancias
-  const listaGrupos = Object.values(grupos).map(g => ({
-    ...g,
-    distancia: ubicacionCliente
-      ? haversine(ubicacionCliente.lat, ubicacionCliente.lon, g.negocio.lat, g.negocio.lon)
-      : null
-  }));
+  /* Distancia (solo si hay coordenadas válidas). */
+  const listaGrupos = Object.values(grupos).map(g => {
+    const tieneCoords = Number.isFinite(g.negocio.lat) && Number.isFinite(g.negocio.lon);
+    let distancia = null;
+    if (tieneCoords && ubicacionCliente) {
+      distancia = haversine(ubicacionCliente.lat, ubicacionCliente.lon, g.negocio.lat, g.negocio.lon);
+    }
+    return { ...g, distancia, tieneCoords };
+  });
 
-  if (ubicacionCliente) listaGrupos.sort((a, b) => a.distancia - b.distancia);
-  else listaGrupos.sort((a, b) => a.negocio.nombre.localeCompare(b.negocio.nombre));
+  /* Ordenar: con distancia primero, luego por nombre. */
+  listaGrupos.sort((a, b) => {
+    if (a.distancia !== null && b.distancia !== null) return a.distancia - b.distancia;
+    if (a.distancia !== null) return -1;
+    if (b.distancia !== null) return 1;
+    return String(a.negocio.nombre || '').localeCompare(String(b.negocio.nombre || ''));
+  });
 
-  if (listaGrupos.length === 0) {
-    lista.innerHTML = '<p class="estado">No encontramos productos para "' + q + '". Prueba con otro término.</p>';
-    markers.forEach(m => m.remove());
-    markers = [];
-    return;
-  }
-
-  // Limpiar markers
+  /* Limpiar markers previos. */
   markers.forEach(m => m.remove());
   markers = [];
 
-  // Render
-  lista.innerHTML = listaGrupos.map(g => {
-    const prods = g.productos.slice(0, 8).map(s =>
-      '<li>' + s.replace(/-/g, ' ').toLowerCase() + '</li>'
+  if (listaGrupos.length === 0) {
+    lista.innerHTML = '<p class="estado">No encontramos resultados para "' + escaparHtml(q) + '". Prueba con otro término.</p>';
+    return;
+  }
+
+  /* Render del listado. */
+  const n = listaGrupos.length;
+  let html = '<p class="estado" style="text-align:left;color:#2E7D32;font-weight:600;">' +
+    n + ' negocio' + (n === 1 ? '' : 's') + ' encontrado' + (n === 1 ? '' : 's') +
+    ' para "' + escaparHtml(q) + '".</p>';
+
+  html += listaGrupos.map(g => {
+    const prods = g.productos.slice(0, 8).map(p =>
+      '<li>' + escaparHtml(nombreProducto(p)) + '</li>'
     ).join('');
     const dist = g.distancia !== null
-      ? (g.distancia < 1000 ? 'a ' + g.distancia + ' m' : 'a ' + (g.distancia/1000).toFixed(1) + ' km')
+      ? (g.distancia < 1000
+          ? 'a ' + g.distancia + ' m'
+          : 'a ' + (g.distancia / 1000).toFixed(1) + ' km')
       : '';
+    const comuna = g.negocio.comuna
+      ? '📍 ' + escaparHtml(g.negocio.comuna) +
+        (g.negocio.region ? ', ' + escaparHtml(g.negocio.region) : '')
+      : '';
+    const etiqueta = etiquetaItems(g.negocio.tipo_establecimiento);
+    const href = urlSitio(g.negocio.slug);
     return '<article class="negocio">' +
-      '<h3><a href="https://sitios.my-red.net/cl/’ + g.negocio.slug + '/">' + g.negocio.nombre + '</a></h3>' +
+      '<h3><a href="' + href + '">' + escaparHtml(g.negocio.nombre || '') + '</a></h3>' +
+      (comuna ? '<p class="comuna">' + comuna + '</p>' : '') +
       (dist ? '<p class="distancia">' + dist + '</p>' : '') +
+      '<p class="etiqueta-items">' + escaparHtml(etiqueta) + '</p>' +
       '<ul class="productos">' + prods + '</ul>' +
-      '<a href="https://sitios.my-red.net/cl/’ + g.negocio.slug + '/" class="btn-ver">Ver negocio →</a>' +
+      '<a href="' + href + '" class="btn-ver">Ver negocio →</a>' +
       '</article>';
   }).join('');
 
-  // Añadir markers
+  lista.innerHTML = html;
+
+  /* Markers: solo para negocios con coordenadas. */
+  const bounds = new maplibregl.LngLatBounds();
+  let hayPuntos = false;
   for (const g of listaGrupos) {
+    if (!g.tieneCoords) continue;
     const marker = new maplibregl.Marker({ color: '#2E7D32' })
       .setLngLat([g.negocio.lon, g.negocio.lat])
-      .setPopup(new maplibregl.Popup().setHTML('<strong>' + g.negocio.nombre + '</strong><br><a href="https://sitios.my-red.net/cl/’ + g.negocio.slug + '/">Ver negocio</a>'))
+      .setPopup(new maplibregl.Popup().setHTML(
+        '<strong>' + escaparHtml(g.negocio.nombre || '') + '</strong><br>' +
+        '<a href="' + urlSitio(g.negocio.slug) + '">Ver negocio</a>'
+      ))
       .addTo(map);
     markers.push(marker);
+    bounds.extend([g.negocio.lon, g.negocio.lat]);
+    hayPuntos = true;
   }
 
-  // Ajustar vista
-  if (listaGrupos.length > 0) {
-    const bounds = new maplibregl.LngLatBounds();
-    listaGrupos.forEach(g => bounds.extend([g.negocio.lon, g.negocio.lat]));
+  /* Ajustar vista del mapa. */
+  if (hayPuntos) {
     if (ubicacionCliente) bounds.extend([ubicacionCliente.lon, ubicacionCliente.lat]);
-    map.fitBounds(bounds, { padding: 60, maxZoom: 14 });
+    if (listaGrupos.length > 1 || ubicacionCliente) {
+      map.fitBounds(bounds, { padding: 60, maxZoom: 14 });
+    } else {
+      map.setCenter([listaGrupos[0].negocio.lon, listaGrupos[0].negocio.lat]);
+      map.setZoom(13);
+    }
   }
 }
 
+/* Enter también busca. */
 document.getElementById('buscador').addEventListener('keypress', e => {
   if (e.key === 'Enter') buscar();
 });
