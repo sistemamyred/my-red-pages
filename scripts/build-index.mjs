@@ -2,6 +2,23 @@
 // build-index.mjs — Lee el buzón de cambios, aplica los cambios de existencia a
 // docs/indice.json, enriquece TODOS los negocios y solo publica coordenadas
 // cuando hay un pin real (nunca el centroide de la región).
+// VERSIÓN 5.2 — 2026-11-27
+// Cambios v5.1 → v5.2:
+//   - Si myred_negocios no tiene filas de datos, el script NO falla: avisa y
+//     termina sin tocar el índice (exit 0). Así una limpieza con solo el
+//     encabezado no rompe el workflow ni vacía el catálogo.
+//   - Se elimina el error por "N productos → 0": vaciar el índice es legítimo
+//     cuando el negocio borra su último producto.
+//   - RESET_INDEX=1 sigue disponible para un reset intencional (permite podar).
+// ------------------------------------------------------------
+// VERSIÓN 5.1 — 2026-11-27
+// Cambios v5 → v5.1:
+//   - Protección de vaciado: si myred_negocios no tiene FILAS DE DATOS (solo
+//     encabezado) se aborta en vez de podar todo el índice.
+//   - Protección de catálogo: si el índice pasaría de N>0 a 0 productos sin
+//     RESET_INDEX=1, se aborta.
+//   - Errores con anotación ::error:: para que el fallo sea visible en GitHub.
+// ------------------------------------------------------------
 // VERSIÓN 5 — 2026-11-26
 // Cambios v4 → v5:
 //   - Lee la columna F del buzón ("nombre") y la guarda en el índice. El buscador
@@ -138,14 +155,19 @@ async function main() {
   // 2) Índice actual
   const indice = cargarIndice();
   const antesContenido = JSON.stringify({ p: indice.productos, n: indice.negocios });
+  const permitirVacio = String(process.env.RESET_INDEX || '') === '1';
 
   // 3) Sheets centrales (por encabezado)
   const [filasNeg, filasUbi] = await Promise.all([
     leerRango(SHEETS_NEGOCIOS, 'Negocios'),
     leerRango(SHEETS_UBICACIONES, 'Ubicaciones'),
   ]);
-  if (filasNeg.length === 0) {
-    throw new Error('myred_negocios no devolvió filas. Abortando para no podar el índice.');
+  if (filasNeg.length < 2) {
+    if (!permitirVacio) {
+      console.log('Sin negocios en myred_negocios: no se modifica el índice (no es un error).');
+      return;
+    }
+    console.warn('RESET_INDEX=1 con myred_negocios vacío: se vaciará el índice.');
   }
 
   const hNeg = filasNeg[0] || [];
